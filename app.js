@@ -7,79 +7,109 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-const SECRET = process.env.JWT_SECRET || "dev_fallback_secret";
+const SECRET = process.env.JWT_SECRET || "dev_secret";
 const PORT = process.env.PORT || 3000;
-const MONGO_URL = process.env.MONGO_URL || "mongodb://127.0.0.1:27017/mywg";
+const MONGO_URL = process.env.MONGO_URL;
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 
-// ---------- MongoDB & User model ----------
+// ------------------ MongoDB Models ------------------
 
 const UserSchema = new mongoose.Schema({
-  username: {
-    type: String,
-    required: true,
-    minlength: 3,
-    maxlength: 32,
-    trim: true
-  },
-  email: {
-    type: String,
-    unique: true,
-    required: true,
-    lowercase: true,
-    trim: true
-  },
-  password: {
-    type: String,
-    required: true,
-    minlength: 6
-  },
+  username: String,
+  email: { type: String, unique: true },
+  password: String,
   createdAt: { type: Date, default: Date.now }
 });
 
+const CodeSchema = new mongoose.Schema({
+  userId: String,
+  code: String,
+  expiresAt: Date
+});
+
 const User = mongoose.model("User", UserSchema);
+const Code = mongoose.model("Code", CodeSchema);
 
-mongoose
-  .connect(MONGO_URL)
-  .then(() => console.log("✅ MongoDB connected"))
-  .catch(err => console.error("❌ Mongo error:", err));
+// ------------------ Connect to MongoDB ------------------
 
-// ---------- Simple HTML pages (still minimal) ----------
+mongoose.connect(MONGO_URL)
+  .then(() => console.log("MongoDB connected"))
+  .catch(err => console.log("Mongo error:", err));
 
-const layout = (title, body) => `
+// ------------------ Console‑Style HTML ------------------
+
+const consoleLayout = (title, body) => `
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="UTF-8" />
   <title>${title}</title>
+  <style>
+    body {
+      background: black;
+      color: #00ff00;
+      font-family: monospace;
+      padding: 20px;
+    }
+    input {
+      background: black;
+      border: 1px solid #00ff00;
+      color: #00ff00;
+      padding: 5px;
+      width: 250px;
+    }
+    button {
+      background: black;
+      border: 1px solid #00ff00;
+      color: #00ff00;
+      padding: 5px 10px;
+      cursor: pointer;
+    }
+    a { color: #00ff00; }
+  </style>
 </head>
 <body>
-  ${body}
+${body}
 </body>
 </html>
 `;
 
-const indexHtml = layout(
-  "MYWG",
-  `
-<h1>MYWG</h1>
-<a href="/signup">Create Account</a><br>
-<a href="/login">Login</a>
-`
-);
+const loginPage = consoleLayout("Login", `
+<h2>MYWG Console Login</h2>
+<input id="email" placeholder="Email"><br><br>
+<input id="password" type="password" placeholder="Password"><br><br>
+<button onclick="login()">LOGIN</button>
 
-const signupHtml = layout(
-  "Sign up - MYWG",
-  `
-<h2>Create MYWG Account</h2>
-<input id="username" placeholder="Username"><br>
-<input id="email" placeholder="Email"><br>
-<input id="password" type="password" placeholder="Password"><br>
-<button onclick="signup()">Sign Up</button>
-<p><a href="/login">Already have an account? Login</a></p>
+<script>
+async function login() {
+  const res = await fetch("/api/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email: email.value,
+      password: password.value
+    })
+  });
+
+  const data = await res.json();
+  if (data.token) {
+    localStorage.setItem("token", data.token);
+    window.location.href = "/code";
+  } else {
+    alert(data.error);
+  }
+}
+</script>
+`);
+
+const signupPage = consoleLayout("Signup", `
+<h2>Create MYWG Console Account</h2>
+<input id="username" placeholder="Username"><br><br>
+<input id="email" placeholder="Email"><br><br>
+<input id="password" type="password" placeholder="Password"><br><br>
+<button onclick="signup()">SIGN UP</button>
 
 <script>
 async function signup() {
@@ -92,195 +122,117 @@ async function signup() {
       password: password.value
     })
   });
-  const data = await res.json();
-  alert(JSON.stringify(data));
-  if (!data.error) window.location.href = "/login";
-}
-</script>
-`
-);
 
-const loginHtml = layout(
-  "Login - MYWG",
-  `
-<h2>Login to MYWG</h2>
-<input id="email" placeholder="Email"><br>
-<input id="password" type="password" placeholder="Password"><br>
-<button onclick="login()">Login</button>
-<p><a href="/signup">Need an account? Sign up</a></p>
-
-<script>
-async function login() {
-  const res = await fetch("/api/login", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      email: email.value,
-      password: password.value
-    })
-  });
   const data = await res.json();
-  if (data.token) {
-    localStorage.setItem("token", data.token);
-    alert("Logged in!");
-    window.location.href = "/dashboard";
+  if (!data.error) {
+    alert("Account created!");
+    window.location.href = "/login";
   } else {
-    alert(JSON.stringify(data));
+    alert(data.error);
   }
 }
 </script>
-`
-);
+`);
 
-const dashboardHtml = layout(
-  "Dashboard - MYWG",
-  `
-<h2>MYWG Dashboard</h2>
-<p id="info">Loading...</p>
-<button onclick="logout()">Logout</button>
+const codePage = consoleLayout("Access Code", `
+<h2>MYWG Access Code</h2>
+<pre id="output">Fetching code...</pre>
+<button onclick="refresh()">REFRESH CODE</button>
 
 <script>
-async function loadMe() {
+async function refresh() {
   const token = localStorage.getItem("token");
-  if (!token) {
-    document.getElementById("info").innerText = "Not logged in.";
-    return;
-  }
-
-  const res = await fetch("/api/me", {
-    headers: {
-      "Authorization": "Bearer " + token
-    }
+  const res = await fetch("/api/code", {
+    headers: { "Authorization": "Bearer " + token }
   });
-
   const data = await res.json();
-  if (data.error) {
-    document.getElementById("info").innerText = data.error;
-  } else {
-    document.getElementById("info").innerText =
-      "Logged in as " + data.user.email + " (username: " + data.user.username + ")";
-  }
+  document.getElementById("output").innerText =
+    "CODE: " + data.code + "\\nEXPIRES: " + data.expires;
 }
 
-function logout() {
-  localStorage.removeItem("token");
-  alert("Logged out");
-  window.location.href = "/login";
-}
-
-loadMe();
+refresh();
 </script>
-`
-);
+`);
 
-// ---------- Auth middleware ----------
+// ------------------ JWT Middleware ------------------
 
-function authMiddleware(req, res, next) {
-  const authHeader = req.headers.authorization || "";
-  const token = authHeader.startsWith("Bearer ")
-    ? authHeader.slice(7)
-    : null;
+function auth(req, res, next) {
+  const header = req.headers.authorization || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : null;
 
-  if (!token) {
-    return res.status(401).json({ error: "No token provided" });
-  }
+  if (!token) return res.status(401).json({ error: "No token" });
 
   try {
     const decoded = jwt.verify(token, SECRET);
     req.userId = decoded.id;
     next();
   } catch {
-    return res.status(401).json({ error: "Invalid or expired token" });
+    return res.status(401).json({ error: "Invalid token" });
   }
 }
 
-// ---------- Routes (pages) ----------
+// ------------------ Routes ------------------
 
-app.get("/", (req, res) => res.send(indexHtml));
-app.get("/signup", (req, res) => res.send(signupHtml));
-app.get("/login", (req, res) => res.send(loginHtml));
-app.get("/dashboard", (req, res) => res.send(dashboardHtml));
+app.get("/login", (req, res) => res.send(loginPage));
+app.get("/signup", (req, res) => res.send(signupPage));
+app.get("/code", (req, res) => res.send(codePage));
 
-// ---------- API routes ----------
-
+// Signup
 app.post("/api/signup", async (req, res) => {
+  const { username, email, password } = req.body;
+
+  const hashed = await bcrypt.hash(password, 10);
+
   try {
-    const { username, email, password } = req.body;
-
-    if (!username || !email || !password) {
-      return res.status(400).json({ error: "All fields are required" });
-    }
-
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      return res.status(400).json({ error: "Invalid email format" });
-    }
-
-    if (password.length < 6) {
-      return res.status(400).json({ error: "Password must be at least 6 characters" });
-    }
-
-    const existing = await User.findOne({ email: email.toLowerCase() });
-    if (existing) {
-      return res.status(400).json({ error: "Email already exists" });
-    }
-
-    const hashed = await bcrypt.hash(password, 10);
-    const user = await User.create({
-      username,
-      email: email.toLowerCase(),
-      password: hashed
-    });
-
-    res.json({
-      message: "Account created",
-      user: { id: user._id, email: user.email, username: user.username }
-    });
-  } catch (err) {
-    console.error("Signup error:", err);
-    res.status(500).json({ error: "Server error" });
+    const user = await User.create({ username, email, password: hashed });
+    res.json({ message: "Account created" });
+  } catch {
+    res.status(400).json({ error: "Email already exists" });
   }
 });
 
+// Login
 app.post("/api/login", async (req, res) => {
-  try {
-    const { email, password } = req.body;
+  const { email, password } = req.body;
 
-    if (!email || !password) {
-      return res.status(400).json({ error: "Email and password are required" });
-    }
+  const user = await User.findOne({ email });
+  if (!user) return res.status(400).json({ error: "User not found" });
 
-    const user = await User.findOne({ email: email.toLowerCase() });
-    if (!user) return res.status(400).json({ error: "User not found" });
+  const match = await bcrypt.compare(password, user.password);
+  if (!match) return res.status(400).json({ error: "Wrong password" });
 
-    const match = await bcrypt.compare(password, user.password);
-    if (!match) return res.status(400).json({ error: "Wrong password" });
+  const token = jwt.sign({ id: user._id }, SECRET, { expiresIn: "7d" });
+  res.json({ token });
+});
 
-    const token = jwt.sign({ id: user._id }, SECRET, { expiresIn: "7d" });
-    res.json({
-      message: "Logged in",
-      token
+// Generate 5‑minute code
+app.get("/api/code", auth, async (req, res) => {
+  const existing = await Code.findOne({ userId: req.userId });
+
+  // If existing code is still valid, return it
+  if (existing && existing.expiresAt > new Date()) {
+    return res.json({
+      code: existing.code,
+      expires: existing.expiresAt
     });
-  } catch (err) {
-    console.error("Login error:", err);
-    res.status(500).json({ error: "Server error" });
   }
+
+  // Otherwise create a new one
+  const newCode = Math.random().toString(36).substring(2, 10).toUpperCase();
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+
+  await Code.findOneAndUpdate(
+    { userId: req.userId },
+    { code: newCode, expiresAt },
+    { upsert: true }
+  );
+
+  res.json({
+    code: newCode,
+    expires: expiresAt
+  });
 });
 
-// Protected route: get current user
-app.get("/api/me", authMiddleware, async (req, res) => {
-  try {
-    const user = await User.findById(req.userId).select("-password");
-    if (!user) return res.status(404).json({ error: "User not found" });
-    res.json({ user });
-  } catch (err) {
-    console.error("Me error:", err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
+// ------------------ Start Server ------------------
 
-// ---------- Start server ----------
-
-app.listen(PORT, () => {
-  console.log(`🚀 MYWG running on http://localhost:${PORT}`);
-});
+app.listen(PORT, () => console.log(`MYWG running on port ${PORT}`));
